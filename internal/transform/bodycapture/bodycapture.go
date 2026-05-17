@@ -1,12 +1,15 @@
 // Package bodycapture implements a transform that captures request bodies of
 // matching requests and exposes them via PipelineResult.BodyCapture for the
-// audit emitters to render as a `body_capture` group holding `request_body`
-// and `request_body_truncated`.
+// audit emitters to render as top-level `request_body` and
+// `request_body_truncated` audit fields.
 //
-// This transform captures request bodies only. It does not capture response
-// bodies: BufferedBody buffers then replays rather than streaming, so reading
-// a response body in a transform would stall SSE-streaming model replies
-// (Anthropic / OpenAI) for the duration of the stream.
+// Phase 1a (litmus ENG-578): request bodies only. Response body capture is
+// deferred to a follow-up — iron-proxy's BufferedBody is "buffer-then-replay"
+// not "tee-stream", and buffering response bodies for matching hosts would
+// stall SSE-streaming model replies (Anthropic / OpenAI) for the duration of
+// the stream, breaking the candidate's terminal UX. Once iron-proxy gains
+// tee-stream support, response capture can be added behind the same
+// BodyCapture interface.
 package bodycapture
 
 import (
@@ -15,7 +18,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -69,10 +71,7 @@ func (b *bodyCapture) Name() string { return "body_capture" }
 // if the request matches a configured rule, attaches the captured (and
 // possibly truncated) body bytes to TransformContext.BodyCapture. The proxy
 // copies that onto PipelineResult after the pipeline returns; the audit
-// emitters render it as a `body_capture` group with `request_body` +
-// `request_body_truncated`. On a successful capture the transform also
-// annotates its own trace entry with `captured_bytes` and `truncated` markers
-// so the request_transforms array self-documents.
+// emitters render it as top-level `request_body` + `request_body_truncated`.
 //
 // Always returns ActionContinue — body_capture is observation-only and never
 // rejects a request. Read errors are annotated for observability and swallowed
@@ -98,33 +97,16 @@ func (b *bodyCapture) TransformRequest(_ context.Context, tctx *transform.Transf
 	if int64(len(data)) > b.maxRequestBodyBytes {
 		data = data[:b.maxRequestBodyBytes]
 		truncated = true
-		// The byte-boundary cut above may have split a multi-byte UTF-8 rune,
-		// leaving an invalid trailing fragment that renders as U+FFFD in the
-		// audit JSON. Drop up to UTFMax-1 trailing bytes to land on a rune
-		// boundary. Bounded so a body that is genuinely not UTF-8 (binary)
-		// keeps its tail rather than being progressively stripped.
-		for i := 0; i < utf8.UTFMax-1 && len(data) > 0; i++ {
-			if r, size := utf8.DecodeLastRune(data); r != utf8.RuneError || size > 1 {
-				break
-			}
-			data = data[:len(data)-1]
-		}
 	}
 	tctx.BodyCapture = &capture{
 		requestBody:          string(data),
 		requestBodyTruncated: truncated,
 	}
-	// Lightweight markers on the transform's own trace entry so the
-	// request_transforms array self-documents that a body was captured. The
-	// body itself is not duplicated here — it lives in the top-level
-	// body_capture group, which is cheaper for log consumers to query.
-	tctx.Annotate("captured_bytes", len(data))
-	tctx.Annotate("truncated", truncated)
 	return cont, nil
 }
 
-// TransformResponse is a no-op for body_capture. See the package doc for why
-// response bodies are not captured.
+// TransformResponse is a no-op for body_capture in Phase 1a. See the package
+// doc for the rationale (tee-stream needed before response capture is safe).
 func (b *bodyCapture) TransformResponse(_ context.Context, _ *transform.TransformContext, _ *http.Request, _ *http.Response) (*transform.TransformResult, error) {
 	return &transform.TransformResult{Action: transform.ActionContinue}, nil
 }

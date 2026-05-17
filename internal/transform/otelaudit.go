@@ -101,10 +101,10 @@ func NewOTELAuditFunc(provider *sdklog.LoggerProvider) AuditFunc {
 			attrs = append(attrs, log.KeyValue{Key: "mcp", Value: log.MapValue(mcpKVs...)})
 		}
 		if result.BodyCapture != nil && result.BodyCapture.RequestBody() != "" {
-			attrs = append(attrs, log.KeyValue{Key: "body_capture", Value: log.MapValue(
+			attrs = append(attrs,
 				log.String("request_body", result.BodyCapture.RequestBody()),
 				log.Bool("request_body_truncated", result.BodyCapture.RequestBodyTruncated()),
-			)})
+			)
 		}
 
 		rec.AddAttributes(attrs...)

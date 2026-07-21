@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -82,6 +83,22 @@ func TestMirror_StreamsLargeBody(t *testing.T) {
 func TestMirror_NonMatchingHostContinues(t *testing.T) {
 	m := newMirror(t, "http://127.0.0.1:1") // must not be dialed
 	tctx, req := mitmReq("GET", "https://example.com/whatever")
+	res, err := m.TransformRequest(context.Background(), tctx, req)
+	require.NoError(t, err)
+	require.Equal(t, transform.ActionContinue, res.Action)
+	require.Nil(t, res.Response)
+}
+
+func TestMirror_ConnectNotMirrored(t *testing.T) {
+	// The CONNECT that establishes the MITM tunnel matches the host but must NOT
+	// be stubbed (that returns 404 for the CONNECT and kills the tunnel).
+	m := newMirror(t, "http://127.0.0.1:1") // must not be dialed
+	tctx := &transform.TransformContext{Mode: transform.ModeMITM, Logger: slog.Default()}
+	req := &http.Request{
+		Method: http.MethodConnect,
+		Host:   "update.code.visualstudio.com:443",
+		URL:    &url.URL{Host: "update.code.visualstudio.com:443"},
+	}
 	res, err := m.TransformRequest(context.Background(), tctx, req)
 	require.NoError(t, err)
 	require.Equal(t, transform.ActionContinue, res.Action)

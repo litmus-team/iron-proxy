@@ -105,7 +105,13 @@ func (m *Mirror) Name() string { return "mirror" }
 
 // TransformRequest serves a matching request from the mirror.
 func (m *Mirror) TransformRequest(ctx context.Context, tctx *transform.TransformContext, req *http.Request) (*transform.TransformResult, error) {
-	if tctx.Mode != transform.ModeMITM || !hostmatch.MatchAnyRule(m.rules, req) {
+	// Only mirror real download GETs. Crucially, DO NOT act on the CONNECT that
+	// establishes the MITM tunnel: it also matches the host rule and runs in
+	// ModeMITM, but it has no download path — stubbing it returns a 404 for the
+	// CONNECT and kills the tunnel ("CONNECT tunnel failed, response 404"). The
+	// transform runs again on the inner GET once the tunnel is up, which is where
+	// the actual mirroring happens.
+	if req.Method != http.MethodGet || tctx.Mode != transform.ModeMITM || !hostmatch.MatchAnyRule(m.rules, req) {
 		return &transform.TransformResult{Action: transform.ActionContinue}, nil
 	}
 	target := m.upstream + req.URL.RequestURI() // path + raw query, verbatim

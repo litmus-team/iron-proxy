@@ -100,11 +100,21 @@ func NewOTELAuditFunc(provider *sdklog.LoggerProvider) AuditFunc {
 			}
 			attrs = append(attrs, log.KeyValue{Key: "mcp", Value: log.MapValue(mcpKVs...)})
 		}
-		if result.BodyCapture != nil && result.BodyCapture.RequestBody() != "" {
-			attrs = append(attrs,
-				log.String("request_body", result.BodyCapture.RequestBody()),
-				log.Bool("request_body_truncated", result.BodyCapture.RequestBodyTruncated()),
-			)
+		if result.BodyCapture != nil {
+			if body := result.BodyCapture.RequestBody(); body != "" {
+				attrs = append(attrs,
+					log.String("request_body", body),
+					log.Bool("request_body_truncated", result.BodyCapture.RequestBodyTruncated()),
+				)
+			}
+			// See NewAuditLogger: the response half is only complete by the time
+			// this callback runs, which is after the body reached the client.
+			if body := result.BodyCapture.ResponseBody(); body != "" {
+				attrs = append(attrs,
+					log.String("response_body", body),
+					log.Bool("response_body_truncated", result.BodyCapture.ResponseBodyTruncated()),
+				)
+			}
 		}
 
 		rec.AddAttributes(attrs...)

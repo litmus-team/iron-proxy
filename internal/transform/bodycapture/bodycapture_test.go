@@ -2,7 +2,6 @@ package bodycapture
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,11 +17,19 @@ import (
 // YAML factory. Tests pin behavior, not parsing.
 func newTransform(t *testing.T, maxBytes int64, rules []hostmatch.RuleConfig) *bodyCapture {
 	t.Helper()
+	return newTransformWithCaps(t, maxBytes, defaultMaxResponseBodyBytes, rules)
+}
+
+// newTransformWithCaps is newTransform with the response cap pinned too, for the
+// tests that exercise response truncation.
+func newTransformWithCaps(t *testing.T, maxRequest, maxResponse int64, rules []hostmatch.RuleConfig) *bodyCapture {
+	t.Helper()
 	compiled, err := hostmatch.CompileRules(rules, "body_capture")
 	require.NoError(t, err)
 	return &bodyCapture{
-		rules:               compiled,
-		maxRequestBodyBytes: maxBytes,
+		rules:                compiled,
+		maxRequestBodyBytes:  maxRequest,
+		maxResponseBodyBytes: maxResponse,
 	}
 }
 
@@ -129,33 +136,6 @@ func TestBodyCapture_MultipleRules_FirstMatchCapturesOnce(t *testing.T) {
 	require.False(t, tctx.BodyCapture.RequestBodyTruncated())
 }
 
-func TestBodyCapture_TransformResponse_IsNoop(t *testing.T) {
-	// Phase 1a: response capture is deferred until iron-proxy gains tee-stream
-	// support. TransformResponse must NOT touch the response body — doing so
-	// would force-buffer streaming SSE responses (Claude/OpenAI replies),
-	// stalling the candidate's terminal. This test pins that behavior.
-	bc := newTransform(t, 16*1024, []hostmatch.RuleConfig{
-		{Host: "api.anthropic.com"},
-	})
-	req := makeRequest(t, "api.anthropic.com", "/v1/messages", `{"x":1}`)
-	resp := &http.Response{
-		StatusCode: 200,
-		Body:       transform.NewBufferedBody(io.NopCloser(strings.NewReader("response body")), 1024),
-	}
-	tctx := &transform.TransformContext{}
-
-	res, err := bc.TransformResponse(context.Background(), tctx, req, resp)
-	require.NoError(t, err)
-	require.Equal(t, transform.ActionContinue, res.Action)
-
-	// The response BufferedBody must NOT have been read (Len() == -1 means
-	// "never buffered"). If a future change starts reading it, this test
-	// fails and forces a deliberate update.
-	require.Equal(t, -1, transform.RequireBufferedBody(resp.Body).Len(),
-		"response body must not be read in Phase 1a — would break SSE streaming")
-	require.Nil(t, tctx.BodyCapture, "response transform must not populate BodyCapture in Phase 1a")
-}
-
 func TestBodyCapture_BodyCaptureInterface(t *testing.T) {
 	// Compile-time + runtime check that *capture satisfies transform.BodyCapture.
 	var _ transform.BodyCapture = (*capture)(nil)
@@ -163,4 +143,6 @@ func TestBodyCapture_BodyCaptureInterface(t *testing.T) {
 	c := &capture{requestBody: "hi", requestBodyTruncated: true}
 	require.Equal(t, "hi", c.RequestBody())
 	require.True(t, c.RequestBodyTruncated())
+	require.Equal(t, "", c.ResponseBody())
+	require.False(t, c.ResponseBodyTruncated())
 }

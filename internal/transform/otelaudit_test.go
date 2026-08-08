@@ -263,6 +263,60 @@ func TestOTELAuditFunc_BodyCapture_TruncationFlagPropagates(t *testing.T) {
 	assert.True(t, attrs["request_body_truncated"].AsBool())
 }
 
+func TestOTELAuditFunc_BodyCapture_ResponseFieldsPropagate(t *testing.T) {
+	proc := &recordProcessor{}
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(proc))
+	auditFunc := NewOTELAuditFunc(provider)
+
+	auditFunc(&PipelineResult{
+		Host:       "api.anthropic.com",
+		Method:     "POST",
+		Path:       "/v1/messages",
+		StartedAt:  time.Now(),
+		Duration:   50 * time.Millisecond,
+		Action:     ActionContinue,
+		StatusCode: 200,
+		BodyCapture: &fakeBodyCapture{
+			body:          `{"prompt":"hi"}`,
+			respBody:      "data: [DONE]\n\n",
+			respTruncated: true,
+		},
+	})
+
+	records := proc.Records()
+	require.Len(t, records, 1)
+
+	attrs := recordAttrs(records[0])
+	require.Contains(t, attrs, "response_body")
+	assert.Equal(t, "data: [DONE]\n\n", attrs["response_body"].AsString())
+	require.Contains(t, attrs, "response_body_truncated")
+	assert.True(t, attrs["response_body_truncated"].AsBool())
+}
+
+func TestOTELAuditFunc_BodyCapture_EmptyResponseOmitsFields(t *testing.T) {
+	proc := &recordProcessor{}
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(proc))
+	auditFunc := NewOTELAuditFunc(provider)
+
+	auditFunc(&PipelineResult{
+		Host:        "api.anthropic.com",
+		Method:      "POST",
+		Path:        "/v1/messages",
+		StartedAt:   time.Now(),
+		Duration:    50 * time.Millisecond,
+		Action:      ActionContinue,
+		StatusCode:  200,
+		BodyCapture: &fakeBodyCapture{body: `{"prompt":"hi"}`},
+	})
+
+	records := proc.Records()
+	require.Len(t, records, 1)
+
+	attrs := recordAttrs(records[0])
+	require.NotContains(t, attrs, "response_body")
+	require.NotContains(t, attrs, "response_body_truncated")
+}
+
 func TestOTELAuditFunc_BodyCapture_NilOmitsFields(t *testing.T) {
 	proc := &recordProcessor{}
 	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(proc))

@@ -41,7 +41,9 @@ func TestMirror_ServesMatchingFromUpstream(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.RequestURI()
 		w.Header().Set("Content-Type", "application/octet-stream")
-		io.WriteString(w, body)
+		// Test-server handler: a write failure here surfaces as a client-side
+		// assertion failure below, so the error is deliberately ignored.
+		_, _ = io.WriteString(w, body)
 	}))
 	defer srv.Close()
 
@@ -65,7 +67,9 @@ func TestMirror_ServesMatchingFromUpstream(t *testing.T) {
 func TestMirror_StreamsLargeBody(t *testing.T) {
 	big := strings.Repeat("x", 5<<20) // 5 MiB, well past any buffer
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, big)
+		// Test-server handler: a write failure here surfaces as a client-side
+		// assertion failure below, so the error is deliberately ignored.
+		_, _ = io.WriteString(w, big)
 	}))
 	defer srv.Close()
 
@@ -126,7 +130,9 @@ func TestMirror_UnreachableIsStub502(t *testing.T) {
 func TestMirror_UpstreamStatusPassthrough(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound) // e.g. Microsoft GC'd this commit
-		io.WriteString(w, "gone")
+		// Test-server handler: a write failure here surfaces as a client-side
+		// assertion failure below, so the error is deliberately ignored.
+		_, _ = io.WriteString(w, "gone")
 	}))
 	defer srv.Close()
 

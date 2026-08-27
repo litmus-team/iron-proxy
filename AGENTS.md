@@ -19,6 +19,30 @@ tools.
 The README is the source of truth for product behavior. When in doubt about
 intended behavior, read it before changing code.
 
+## This is the Litmus fork
+
+This checkout is `litmus-team/iron-proxy`, a fork of `ironsh/iron-proxy`
+(remote `upstream`). The Litmus delta rides on top of an upstream tag and is
+re-landed by cherry-pick when we rebase; `git log --oneline <tag>..HEAD` shows
+it. Two invariants matter more than anything else in this file:
+
+- **The audit record's body-capture fields are top-level and must stay that
+  way.** `internal/transform/audit.go` and `otelaudit.go` emit `request_body`,
+  `request_body_truncated`, `response_body`, `response_body_truncated` as
+  top-level attributes. Upstream ships its own `internal/transform/bodycapture`
+  at the SAME import path and transform name (`body_capture`) that emits a
+  NESTED `body_capture` group instead — ours deliberately replaces it on every
+  rebase. Do not adopt upstream's shape while resolving a conflict: the
+  consumer (`infra/hostd/hostd.py` in the `litmus` repo) reads the top-level
+  fields, so nesting them drops every captured prompt silently. Capture keeps
+  appearing to work and produces nothing.
+- **`internal/transform/mirror` must stream, never buffer.** It serves
+  multi-hundred-megabyte editor downloads, so `TransformRequest` returns once
+  the mirror's headers are in and hands the live upstream body through. Its
+  host rules come from config (in the `litmus` repo), not from this tree.
+  `internal/transform/mirror/streaming_test.go` fails if either property
+  regresses; a test that merely reads a large body back intact does not.
+
 ## Go conventions
 
 - Use `github.com/stretchr/testify/require` for assertions. Never
@@ -128,3 +152,10 @@ go test ./integration_test/...   # integration; many require external creds
 
 The integration suite uses testcontainers and real cloud backends; expect
 many tests to skip in a clean environment. That is intended.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

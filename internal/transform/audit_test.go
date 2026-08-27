@@ -271,14 +271,18 @@ func TestAudit_EmptyTransforms(t *testing.T) {
 // the audit emitters without pulling in the bodycapture package (which would
 // cause an import cycle via its dependency on transform).
 type fakeBodyCapture struct {
-	body      string
-	truncated bool
+	body          string
+	truncated     bool
+	respBody      string
+	respTruncated bool
 }
 
-func (f *fakeBodyCapture) RequestBody() string        { return f.body }
-func (f *fakeBodyCapture) RequestBodyTruncated() bool { return f.truncated }
+func (f *fakeBodyCapture) RequestBody() string         { return f.body }
+func (f *fakeBodyCapture) RequestBodyTruncated() bool  { return f.truncated }
+func (f *fakeBodyCapture) ResponseBody() string        { return f.respBody }
+func (f *fakeBodyCapture) ResponseBodyTruncated() bool { return f.respTruncated }
 
-func TestAudit_BodyCapture_PopulatesGroup(t *testing.T) {
+func TestAudit_BodyCapture_PopulatesTopLevelFields(t *testing.T) {
 	result := &PipelineResult{
 		Host:        "api.anthropic.com",
 		Method:      "POST",
@@ -292,13 +296,11 @@ func TestAudit_BodyCapture_PopulatesGroup(t *testing.T) {
 
 	parsed, raw := captureAuditLog(result)
 
-	// request_body / request_body_truncated land inside a `body_capture` group
-	// at the root of the record — namespaced like the `mcp` and `audit`
-	// groups, not loose at the root.
-	bc, ok := parsed["body_capture"].(map[string]any)
-	require.True(t, ok, "body_capture group should be present. raw=%s", raw)
-	require.Equal(t, `{"prompt":"hi"}`, bc["request_body"])
-	require.Equal(t, false, bc["request_body_truncated"])
+	// request_body / request_body_truncated land at the TOP level of the log
+	// record (mirroring the MCP block's position), not inside the `audit`
+	// group. ENG-571 / litmus parseIronProxyAudit reads them at root.
+	require.Equal(t, `{"prompt":"hi"}`, parsed["request_body"], "raw=%s", raw)
+	require.Equal(t, false, parsed["request_body_truncated"])
 }
 
 func TestAudit_BodyCapture_TruncationFlagPropagates(t *testing.T) {
@@ -313,16 +315,14 @@ func TestAudit_BodyCapture_TruncationFlagPropagates(t *testing.T) {
 		BodyCapture: &fakeBodyCapture{body: "xxxxxxxxxxxxxxxx", truncated: true},
 	}
 
-	parsed, raw := captureAuditLog(result)
+	parsed, _ := captureAuditLog(result)
 
-	bc, ok := parsed["body_capture"].(map[string]any)
-	require.True(t, ok, "body_capture group should be present. raw=%s", raw)
-	require.Equal(t, true, bc["request_body_truncated"])
+	require.Equal(t, true, parsed["request_body_truncated"])
 }
 
-func TestAudit_BodyCapture_NilOmitsGroup(t *testing.T) {
+func TestAudit_BodyCapture_NilOmitsFields(t *testing.T) {
 	// No body_capture rule matched — BodyCapture is nil. Audit line must
-	// NOT include the body_capture group.
+	// NOT include request_body / request_body_truncated fields.
 	result := &PipelineResult{
 		Host:       "example.com",
 		Method:     "GET",
@@ -335,15 +335,17 @@ func TestAudit_BodyCapture_NilOmitsGroup(t *testing.T) {
 
 	parsed, raw := captureAuditLog(result)
 
-	_, hasGroup := parsed["body_capture"]
-	require.False(t, hasGroup, "body_capture group should be absent when BodyCapture is nil. raw=%s", raw)
+	_, hasBody := parsed["request_body"]
+	require.False(t, hasBody, "request_body should be absent when BodyCapture is nil. raw=%s", raw)
+	_, hasFlag := parsed["request_body_truncated"]
+	require.False(t, hasFlag, "request_body_truncated should be absent when BodyCapture is nil. raw=%s", raw)
 }
 
-func TestAudit_BodyCapture_EmptyBodyOmitsGroup(t *testing.T) {
+func TestAudit_BodyCapture_EmptyBodyOmitsFields(t *testing.T) {
 	// BodyCapture is set but RequestBody() is empty (defensive — shouldn't
 	// happen in practice because the transform skips empty bodies, but the
 	// audit emitter checks `!= ""` too). Audit line must not include the
-	// body_capture group.
+	// fields.
 	result := &PipelineResult{
 		Host:        "example.com",
 		Method:      "GET",
@@ -357,6 +359,94 @@ func TestAudit_BodyCapture_EmptyBodyOmitsGroup(t *testing.T) {
 
 	parsed, _ := captureAuditLog(result)
 
-	_, hasGroup := parsed["body_capture"]
-	require.False(t, hasGroup, "body_capture group should be absent when RequestBody() is empty")
+	_, hasBody := parsed["request_body"]
+	require.False(t, hasBody, "request_body should be absent when RequestBody() is empty")
+}
+
+func TestAudit_BodyCapture_ResponseBodyPopulatesTopLevelFields(t *testing.T) {
+	// litmus hostd's _parse_ai_audit reads `response_body` at the TOP level of
+	// the record (or nested under `audit`); top-level is where request_body
+	// already lands, so the response half goes beside it.
+	result := &PipelineResult{
+		Host:       "api.anthropic.com",
+		Method:     "POST",
+		Path:       "/v1/messages",
+		StartedAt:  time.Now(),
+		Duration:   1 * time.Millisecond,
+		Action:     ActionContinue,
+		StatusCode: 200,
+		BodyCapture: &fakeBodyCapture{
+			body:     `{"prompt":"hi"}`,
+			respBody: "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+		},
+	}
+
+	parsed, raw := captureAuditLog(result)
+
+	require.Equal(t, `{"prompt":"hi"}`, parsed["request_body"], "raw=%s", raw)
+	require.Equal(t, "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+		parsed["response_body"], "raw=%s", raw)
+	require.Equal(t, false, parsed["response_body_truncated"])
+}
+
+func TestAudit_BodyCapture_ResponseTruncationFlagPropagates(t *testing.T) {
+	result := &PipelineResult{
+		Host:        "api.openai.com",
+		Method:      "POST",
+		Path:        "/v1/chat/completions",
+		StartedAt:   time.Now(),
+		Duration:    1 * time.Millisecond,
+		Action:      ActionContinue,
+		StatusCode:  200,
+		BodyCapture: &fakeBodyCapture{respBody: "xxxx", respTruncated: true},
+	}
+
+	parsed, _ := captureAuditLog(result)
+
+	require.Equal(t, true, parsed["response_body_truncated"])
+}
+
+func TestAudit_BodyCapture_ResponseOnlyOmitsRequestFields(t *testing.T) {
+	// A matching request with no body of its own still produces a response
+	// capture. The request fields must stay absent rather than logging empties.
+	result := &PipelineResult{
+		Host:        "api.anthropic.com",
+		Method:      "GET",
+		Path:        "/v1/models",
+		StartedAt:   time.Now(),
+		Duration:    1 * time.Millisecond,
+		Action:      ActionContinue,
+		StatusCode:  200,
+		BodyCapture: &fakeBodyCapture{respBody: `{"data":[]}`},
+	}
+
+	parsed, raw := captureAuditLog(result)
+
+	_, hasReq := parsed["request_body"]
+	require.False(t, hasReq, "request_body should be absent. raw=%s", raw)
+	require.Equal(t, `{"data":[]}`, parsed["response_body"])
+}
+
+func TestAudit_BodyCapture_EmptyResponseOmitsFields(t *testing.T) {
+	// Nothing captured — no rule matched the response, the body never streamed,
+	// or its encoding was undecodable. The audit line must not carry empty
+	// response fields that would read as "the model replied with nothing".
+	result := &PipelineResult{
+		Host:        "api.anthropic.com",
+		Method:      "POST",
+		Path:        "/v1/messages",
+		StartedAt:   time.Now(),
+		Duration:    1 * time.Millisecond,
+		Action:      ActionContinue,
+		StatusCode:  200,
+		BodyCapture: &fakeBodyCapture{body: `{"prompt":"hi"}`, respBody: ""},
+	}
+
+	parsed, raw := captureAuditLog(result)
+
+	require.Equal(t, `{"prompt":"hi"}`, parsed["request_body"])
+	_, hasResp := parsed["response_body"]
+	require.False(t, hasResp, "response_body should be absent when empty. raw=%s", raw)
+	_, hasFlag := parsed["response_body_truncated"]
+	require.False(t, hasFlag, "response_body_truncated should be absent when empty. raw=%s", raw)
 }

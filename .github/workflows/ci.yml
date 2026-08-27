@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, backport/mirror-v0.31]
+    branches: [main, backport/mirror-v0.31, backport/mirror-v0.49]
   pull_request:
-    branches: [main, backport/mirror-v0.31]
+    branches: [main, backport/mirror-v0.31, backport/mirror-v0.49]
 
 jobs:
   test:

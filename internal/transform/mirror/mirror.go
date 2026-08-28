@@ -123,6 +123,14 @@ func (m *Mirror) TransformRequest(ctx context.Context, tctx *transform.Transform
 		tctx.Annotate("error", err.Error())
 		return &transform.TransformResult{Action: transform.ActionStub, Response: synth(req, http.StatusBadGateway, "mirror request build failed")}, nil
 	}
+	// Relay the client's own headers onto the mirror fetch. Omitting this is
+	// ENG-1953: the mirror saw a bare "User-Agent: Go-http-client/1.1" and every
+	// client header — Authorization above all — vanished by omission, with no
+	// filter to log and nothing to grep. Copilot's token calls therefore reached
+	// GitHub anonymous, drew the mirror VM's shared-IP rate limit, and Copilot
+	// unregistered its BYOK providers. Still a bodyless GET: nothing here adds a
+	// body, and the body-framing headers are dropped (see relayRequestHeaders).
+	mreq.Header = relayRequestHeaders(req.Header)
 	resp, err := m.client.Do(mreq)
 	if err != nil {
 		tctx.Annotate("error", err.Error())
@@ -153,13 +161,127 @@ func (m *Mirror) TransformResponse(context.Context, *transform.TransformContext,
 	return &transform.TransformResult{Action: transform.ActionContinue}, nil
 }
 
-// passthroughHeaders copies the headers a downloading client needs to interpret
-// the body correctly, dropping hop-by-hop and connection-scoped headers.
+// hopByHopRequestHeaders never travel to the mirror. Keys are in the canonical
+// form http.Header uses, hence "Te" rather than "TE" — CanonicalHeaderKey
+// title-cases each dash-separated token, so a literal "TE" would never match.
+//
+// The first group is hop-by-hop / connection-scoped (RFC 9110 section 7.6.1):
+// these describe THIS connection rather than the message, so forwarding them
+// corrupts the next hop's framing. Host is second: NewRequestWithContext already
+// derives it from the mirror target, and relaying the origin's Host would send
+// the mirror a request addressed to somebody else. (Go's server promotes Host
+// out of Header into Request.Host, so that one is belt-and-suspenders.) The last
+// group is body framing: the mirror fetch is a bodyless GET by contract, and
+// Content-Length or Expect would describe a body that is never sent — Expect:
+// 100-continue in particular leaves the origin waiting for one that never comes.
+var hopByHopRequestHeaders = map[string]bool{
+	"Connection":        true,
+	"Keep-Alive":        true,
+	"Transfer-Encoding": true,
+	"Upgrade":           true,
+	"Te":                true,
+	"Trailer":           true,
+
+	"Host": true,
+
+	"Content-Length": true,
+	"Expect":         true,
+}
+
+// relayRequestHeaders builds the header set the mirror fetch carries, copying
+// the client's headers minus the ones that must not cross a hop.
+//
+// Copy-minus-hop-by-hop, deliberately NOT an allowlist. An allowlist looks
+// safer, but it fails in precisely the way ENG-1953 failed: the next header the
+// client starts sending is dropped silently, nothing logs it, and the symptom
+// surfaces somewhere far away as an unexplained 401 or rate-limit. A denylist
+// fails loudly instead — anything that must not travel is written down right
+// here, in one list a reviewer can read. What bounds the blast radius is not
+// this function but the route table: only requests already matched by m.rules
+// are mirrored at all, so a relayed credential reaches only the operator's
+// configured upstream, and only for the host/path pairs the operator listed.
+//
+// Proxy-* is dropped by prefix: those headers are addressed to a proxy, not to
+// an origin, and Proxy-Authorization in particular must not leak onward.
+func relayRequestHeaders(h http.Header) http.Header {
+	// RFC 9110 section 7.6.1: Connection's value names FURTHER headers that are
+	// scoped to this connection alone. Honouring that is what makes the denylist
+	// complete rather than merely long — the client can name headers we could
+	// not have enumerated ahead of time.
+	var connScoped map[string]bool
+	for _, v := range h.Values("Connection") {
+		for _, tok := range strings.Split(v, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok == "" {
+				continue
+			}
+			if connScoped == nil {
+				connScoped = map[string]bool{}
+			}
+			connScoped[http.CanonicalHeaderKey(tok)] = true
+		}
+	}
+
+	out := make(http.Header, len(h))
+	for k, vs := range h {
+		ck := http.CanonicalHeaderKey(k)
+		if hopByHopRequestHeaders[ck] || connScoped[ck] || strings.HasPrefix(strings.ToLower(ck), "proxy-") {
+			continue
+		}
+		out[ck] = append([]string(nil), vs...)
+	}
+	return out
+}
+
+// passthroughHeaderNames are the response headers copied back to the client.
+//
+// This direction stays an allowlist, unlike the request direction above. The
+// asymmetry is deliberate: a request must carry whatever the client invents
+// next, whereas a response header we did not plan for is a liability around a
+// synthetic stub (a Connection directive we cannot honour, a Set-Cookie the
+// mirror had no business minting) rather than something lost. Three groups:
+//
+//   - Body shape, so the bytes decode: Content-Type/Length/Encoding, plus
+//     Accept-Ranges and Content-Range. Those two are newly load-bearing now that
+//     the client's Range header is relayed upstream — a 206 whose Content-Range
+//     we stripped would be undecodable.
+//   - Validators and caching: ETag, Last-Modified, Cache-Control, Vary.
+//   - Failure semantics, so a client can ACT on a failure instead of guessing at
+//     it: WWW-Authenticate says why a 401 happened, Retry-After and X-RateLimit-*
+//     say when a 429 clears. Dropping these is the other half of ENG-1953 —
+//     GitHub explained the rate limit and the client never saw the explanation.
+var passthroughHeaderNames = []string{
+	"Content-Type", "Content-Length", "Content-Encoding",
+	"Accept-Ranges", "Content-Range",
+	"ETag", "Last-Modified", "Cache-Control", "Vary",
+	"WWW-Authenticate", "Retry-After",
+}
+
+// passthroughHeaderPrefixes matches header families whose members cannot be
+// enumerated ahead of time. Lowercase, and matched against a lowercased key:
+// canonicalization renders X-RateLimit-Remaining as X-Ratelimit-Remaining, so a
+// case-sensitive prefix would silently miss every single one of them.
+var passthroughHeaderPrefixes = []string{"x-ratelimit-"}
+
+// passthroughHeaders copies the headers a client needs to interpret the response
+// correctly, dropping hop-by-hop and connection-scoped headers (an allowlist
+// excludes those by construction). Keys are canonicalized on the way out:
+// "WWW-Authenticate" and "ETag" are NOT their own canonical forms, so writing
+// them verbatim would produce a map that Header.Get can never find again.
 func passthroughHeaders(h http.Header) http.Header {
 	out := http.Header{}
-	for _, k := range []string{"Content-Type", "Content-Length", "Content-Encoding", "ETag", "Last-Modified"} {
+	for _, k := range passthroughHeaderNames {
 		if v := h.Values(k); len(v) > 0 {
-			out[k] = append([]string(nil), v...)
+			out[http.CanonicalHeaderKey(k)] = append([]string(nil), v...)
+		}
+	}
+	for k, vs := range h {
+		lk := strings.ToLower(k)
+		for _, p := range passthroughHeaderPrefixes {
+			if strings.HasPrefix(lk, p) {
+				out[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
+				break
+			}
 		}
 	}
 	return out

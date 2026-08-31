@@ -42,6 +42,20 @@ it. Two invariants matter more than anything else in this file:
   host rules come from config (in the `litmus` repo), not from this tree.
   `internal/transform/mirror/streaming_test.go` fails if either property
   regresses; a test that merely reads a large body back intact does not.
+- **Releases are cut from a `backport/mirror-*` branch, never `main`.** `main`
+  deliberately tracks upstream so rebases stay cheap and carries none of the
+  Litmus transforms. Tags are `vX.Y.Z-litmus.N` on the backport branch, and
+  `.github/workflows/release.yml` fires on `v*`. That file carries two
+  fork-only edits a rebase will silently revert, because upstream's release
+  path assumes credentials this fork does not have (it has **no** repository
+  secrets): the job-level `DOCKER_PUSH` guard, which keeps a hyphenated tag
+  away from the `ironsh/iron-proxy` Docker Hub namespace via both the login
+  `if:` and GoReleaser's `--skip=docker`; and the OSS GoReleaser distribution,
+  since `goreleaser-pro` aborts a non-snapshot run with "missing GoReleaser Pro
+  key" before it builds anything. Both failures destroy the whole release —
+  GoReleaser exits non-zero, so no release object is created and the archives
+  already built are discarded. Snapshot (PR) runs hide both, so this only ever
+  breaks at tag time.
 
 ## Go conventions
 

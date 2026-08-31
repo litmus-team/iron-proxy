@@ -14,6 +14,17 @@ jobs:
   iron-proxy:
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    env:
+      # Tag pushes cut a real release; anything else (PRs) is a snapshot build.
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      # THE single source of truth for Docker Hub. Only upstream-shaped release
+      # tags (vX.Y.Z, no pre-release suffix) can push to ironsh/iron-proxy.
+      # Hyphenated tags - this fork's v0.31.0-litmus.N / v0.49.0-litmus.N,
+      # upstream's v*-rc.N - have no credentials for that namespace, so they
+      # publish archives + checksums only. This one value drives BOTH the login
+      # below and GoReleaser's --skip=docker, so the guard and the publish
+      # cannot drift apart again.
+      DOCKER_PUSH: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -35,7 +46,7 @@ jobs:
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Log in to Docker Hub
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.DOCKER_PUSH == 'true'
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
@@ -44,16 +55,23 @@ jobs:
       - name: Run GoReleaser (iron-proxy)
         uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
         with:
-          distribution: goreleaser-pro
+          # OSS distribution, not upstream's goreleaser-pro. GoReleaser Pro
+          # checks its licence on any non-snapshot run and aborts with
+          # "missing GoReleaser Pro key" before it builds anything; this fork
+          # has no GORELEASER_KEY, so every -litmus.N tag would fail the job
+          # and produce no release at all. .goreleaser.yml uses no Pro-only
+          # feature - `goreleaser check` passes on the OSS binary and an OSS
+          # tag-mode run produces the same four archives and checksums.txt.
+          # Restore `distribution: goreleaser-pro` if the fork ever gets a key.
           version: latest
           args: >-
             release
             --config .goreleaser.yml
-            ${{ !startsWith(github.ref, 'refs/tags/v') && '--snapshot' || '' }}
+            ${{ env.RELEASE_TAG != 'true' && '--snapshot' || '' }}
+            ${{ env.RELEASE_TAG == 'true' && env.DOCKER_PUSH != 'true' && '--skip=docker' || '' }}
             --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
 
       - uses: ironsh/iron-proxy-action/summary@fa1fd82ec32396d044deba7040a6db576bec927a # v0.1.4
         if: always()

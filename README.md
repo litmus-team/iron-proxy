@@ -1039,3 +1039,24 @@ To verify a specific binary against the signed checksum list (example: `iron-pro
 ```bash
 shasum -a 256 iron-proxy-linux-amd64 | grep -F "$(grep -F 'iron-proxy-linux-amd64' checksums.txt | awk '{print $1}')"
 ```
+
+### Encrypted client-to-proxy tunnel (optional)
+
+Set both `proxy.tunnel_tls_cert` and `proxy.tunnel_tls_key` with
+`proxy.tunnel_listen`, and configure clients with `https://proxy-host:port` and
+a trusted issuing CA. The certificate must cover that proxy address. This wraps
+the existing CONNECT/SOCKS5 listener in TLS 1.2 or newer, including CONNECT
+headers and HTTP bodies inside it. Empty defaults preserve current behavior;
+invalid certificate files fail startup with no plaintext fallback. This does
+not upgrade a plain HTTP origin to HTTPS; origin transport policy is separate.
+
+The optional real-client compatibility test uses `curl`, Python `requests`, and
+Node `https-proxy-agent` against isolated loopback servers with synthetic
+certificates and credentials:
+
+```bash
+IRON_PROXY_TEST_CLIENTS=1 \
+IRON_PROXY_TEST_PYTHON=/path/to/python-with-requests \
+IRON_PROXY_TEST_NODE_AGENT=/path/to/node_modules/https-proxy-agent \
+go test ./internal/proxy -run TestTunnelOuterTLS -v
+```

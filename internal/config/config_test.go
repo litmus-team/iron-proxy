@@ -598,3 +598,27 @@ tls:
 		require.Contains(t, err.Error(), "control_plane.poll_interval must be positive")
 	})
 }
+
+func TestTunnelTLSConfigPairs(t *testing.T) {
+	cases := []struct {
+		name, extra string
+		ok          bool
+	}{
+		{"default", "", true},
+		{"pair", "tunnel_listen: \"127.0.0.1:8080\"\ntunnel_tls_cert: /cert\ntunnel_tls_key: /key", true},
+		{"cert_only", "tunnel_listen: \"127.0.0.1:8080\"\ntunnel_tls_cert: /cert", false},
+		{"key_only", "tunnel_listen: \"127.0.0.1:8080\"\ntunnel_tls_key: /key", false},
+		{"no_listener", "tunnel_tls_cert: /cert\ntunnel_tls_key: /key", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(strings.NewReader(validYAML() + "\nproxy:\n  " + strings.ReplaceAll(tc.extra, "\n", "\n  ") + "\n"))
+			if tc.ok {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}

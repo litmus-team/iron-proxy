@@ -29,6 +29,10 @@ dns:
 proxy:
   http_listen: ":80"
   https_listen: ":443"
+  # Optional TLS-only CONNECT/SOCKS5 listener; trust its issuing CA in clients.
+  # tunnel_listen: ":8080"
+  # tunnel_tls_cert: "/run/credentials/proxy.crt"
+  # tunnel_tls_key: "/run/credentials/proxy.key"
   # Global body buffer limits for transforms.
   max_request_body_bytes: 1048576   # default: 1 MiB
   # max_response_body_bytes: 0      # default: 0 (uncapped)

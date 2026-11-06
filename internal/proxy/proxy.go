@@ -38,6 +38,8 @@ type Proxy struct {
 	tlsMode        string
 	tlsListener    net.Listener
 	tunnelAddr     string
+	tunnelTLSCert  string
+	tunnelTLSKey   string
 	tunnelListener net.Listener
 	tunnelDone     chan struct{}
 	certCache      *certcache.Cache
@@ -65,17 +67,19 @@ const notReadyMessage = "proxy is not ready: awaiting control-plane config"
 
 // Options configures Proxy construction.
 type Options struct {
-	HTTPAddr   string
-	HTTPSAddr  string
-	TunnelAddr string
-	TLSMode    string
-	CertCache  *certcache.Cache // required when TLSMode == config.TLSModeMITM
-	Pipeline   *transform.PipelineHolder
-	Resolver   *net.Resolver
-	Guard      *dnsguard.Guard   // nil is treated as an empty (no-op) guard
-	MCPPolicy  *mcp.PolicyHolder // optional MCP-aware policy interceptor; nil disables MCP handling
-	MCPGateway *mcpgateway.Holder
-	Logger     *slog.Logger
+	HTTPAddr      string
+	HTTPSAddr     string
+	TunnelAddr    string
+	TunnelTLSCert string
+	TunnelTLSKey  string
+	TLSMode       string
+	CertCache     *certcache.Cache // required when TLSMode == config.TLSModeMITM
+	Pipeline      *transform.PipelineHolder
+	Resolver      *net.Resolver
+	Guard         *dnsguard.Guard   // nil is treated as an empty (no-op) guard
+	MCPPolicy     *mcp.PolicyHolder // optional MCP-aware policy interceptor; nil disables MCP handling
+	MCPGateway    *mcpgateway.Holder
+	Logger        *slog.Logger
 	// UpstreamResponseHeaderTimeout overrides the upstream HTTP transport's
 	// ResponseHeaderTimeout. Zero falls back to
 	// config.DefaultUpstreamResponseHeaderTimeout.
@@ -108,6 +112,8 @@ func New(opts Options) *Proxy {
 		httpsAddr:      opts.HTTPSAddr,
 		tlsMode:        opts.TLSMode,
 		tunnelAddr:     opts.TunnelAddr,
+		tunnelTLSCert:  opts.TunnelTLSCert,
+		tunnelTLSKey:   opts.TunnelTLSKey,
 		tunnelDone:     make(chan struct{}),
 		certCache:      opts.CertCache,
 		pipeline:       opts.Pipeline,

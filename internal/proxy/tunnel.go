@@ -25,7 +25,7 @@ import (
 
 // listenTunnel starts the CONNECT/SOCKS5 tunnel listener.
 func (p *Proxy) listenTunnel() error {
-	ln, err := net.Listen("tcp", p.tunnelAddr)
+	ln, err := p.newTunnelListener()
 	if err != nil {
 		return fmt.Errorf("tunnel listen: %w", err)
 	}
@@ -47,9 +47,35 @@ func (p *Proxy) listenTunnel() error {
 	}
 }
 
+// newTunnelListener enables outer TLS only when explicitly configured. A bad
+// certificate is an error; it must never silently restore a plaintext listener.
+func (p *Proxy) newTunnelListener() (net.Listener, error) {
+	if p.tunnelTLSCert == "" && p.tunnelTLSKey == "" {
+		return net.Listen("tcp", p.tunnelAddr)
+	}
+	if p.tunnelTLSCert == "" || p.tunnelTLSKey == "" {
+		return nil, fmt.Errorf("tunnel TLS requires both certificate and key")
+	}
+	cert, err := tls.LoadX509KeyPair(p.tunnelTLSCert, p.tunnelTLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("load tunnel TLS certificate: %w", err)
+	}
+	return tls.Listen("tcp", p.tunnelAddr, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+}
+
 // handleTunnel peeks at the first byte to dispatch to HTTP proxy or SOCKS5.
 // This is the single logging point for tunnel connection errors.
 func (p *Proxy) handleTunnel(conn net.Conn) {
+	if secure, ok := conn.(*tls.Conn); ok {
+		ctx, cancel := context.WithTimeout(p.shutdownCtx, 10*time.Second)
+		err := secure.HandshakeContext(ctx)
+		cancel()
+		if err != nil {
+			_ = conn.Close()
+			return
+		}
+	}
+
 	br := bufio.NewReader(conn)
 	first, err := br.Peek(1)
 	if err != nil {

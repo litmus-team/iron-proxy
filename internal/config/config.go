@@ -96,9 +96,13 @@ type DNSRecord struct {
 
 // Proxy configures the HTTP/HTTPS listener addresses.
 type Proxy struct {
-	HTTPListen           string `yaml:"http_listen"`
-	HTTPSListen          string `yaml:"https_listen"`
-	TunnelListen         string `yaml:"tunnel_listen"`
+	HTTPListen   string `yaml:"http_listen"`
+	HTTPSListen  string `yaml:"https_listen"`
+	TunnelListen string `yaml:"tunnel_listen"`
+	// Setting both files makes the tunnel listener TLS-only (TLS 1.2+).
+	// Empty by default; no plaintext fallback on certificate errors.
+	TunnelTLSCert        string `yaml:"tunnel_tls_cert"`
+	TunnelTLSKey         string `yaml:"tunnel_tls_key"`
 	MaxRequestBodyBytes  int64  `yaml:"max_request_body_bytes"`
 	MaxResponseBodyBytes int64  `yaml:"max_response_body_bytes"`
 	// UpstreamResponseHeaderTimeout caps how long the proxy waits for an
@@ -283,6 +287,12 @@ func applyDefaults(cfg *Config) {
 
 // Validate checks required fields and value constraints.
 func Validate(cfg *Config) error {
+	if (cfg.Proxy.TunnelTLSCert == "") != (cfg.Proxy.TunnelTLSKey == "") {
+		return fmt.Errorf("proxy.tunnel_tls_cert and proxy.tunnel_tls_key must be set together")
+	}
+	if cfg.Proxy.TunnelTLSCert != "" && cfg.Proxy.TunnelListen == "" {
+		return fmt.Errorf("proxy.tunnel_listen is required for tunnel TLS")
+	}
 	if cfg.DNS.IsEnabled() && cfg.DNS.ProxyIP == "" {
 		return fmt.Errorf("dns.proxy_ip is required")
 	}
